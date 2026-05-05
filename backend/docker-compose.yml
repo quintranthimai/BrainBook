@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: brainbook
+      POSTGRES_PASSWORD: brainbook
+      POSTGRES_DB: brainbook
+    ports:
+      - "5432:5432"
+    volumes:
+      - brainbook_pg:/var/lib/postgresql/data
+
+volumes:
+  brainbook_pg:

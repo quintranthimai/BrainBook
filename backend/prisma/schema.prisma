@@ -1,0 +1,509 @@
+// BrainBook — schema aligned with Vue frontend (cart, product detail, checkout, contact, header auth)
+// Run: npx prisma migrate dev
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model PaymentEvent {
+  id        String   @id @default(cuid())
+  paymentId String
+  type      String
+  payload   Json
+  createdAt DateTime @default(now())
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@index([paymentId])
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  CUSTOMER
+  ADMIN
+}
+
+enum PaymentMethod {
+  COD
+  BANK_TRANSFER
+  PAYPAL
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  PROCESSING
+  SHIPPED
+  DELIVERED
+  CANCELLED
+}
+
+enum CouponType {
+  PERCENT
+  FIXED_AMOUNT
+}
+
+/// Guest / merge flows: app picks the ACTIVE cart per session (see @@index). Not unique — avoids conflicts on session rotate or multi-tab edge cases.
+enum CartStatus {
+  ACTIVE
+  ABANDONED
+}
+
+/// Fulfillment / gateway lifecycle, separate from OrderStatus (packing & shipping).
+enum PaymentStatus {
+  PENDING
+  AUTHORIZED
+  CAPTURED
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+enum ShipmentStatus {
+  PENDING
+  SHIPPED
+  IN_TRANSIT
+  DELIVERED
+  FAILED
+}
+
+/// Login / register from AppHeader (optional for guest checkout)
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  passwordHash String
+  firstName    String?
+  lastName     String?
+  phone        String?
+  birthday     DateTime?
+  gender       String?
+  newsletter   Boolean   @default(false)
+  role         UserRole  @default(CUSTOMER)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+
+  carts     Cart[]
+  orders    Order[]
+  addresses Address[]
+  couponUsages CouponUsage[]
+  refreshTokens RefreshToken[]
+  reviews       Review[]
+  wishlist      Wishlist?
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+/// Saved shipping/billing book for logged-in users (reuse at checkout). Guest orders omit this FK.
+model Address {
+  id           String   @id @default(cuid())
+  userId       String
+  label        String?
+  firstName    String
+  lastName     String
+  phone        String?
+  countryCode  String
+  city         String
+  addressLine1 String
+  addressLine2 String?
+  isDefault    Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user           User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ordersShipping Order[] @relation("OrderShippingAddress")
+
+  @@index([userId])
+}
+
+model Category {
+  id        Int      @id @default(autoincrement())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+
+  books BookCategory[]
+}
+
+model Tag {
+  id        Int      @id @default(autoincrement())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+
+  books BookTag[]
+}
+
+model Author {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  createdAt DateTime @default(now())
+
+  books Book[]
+}
+
+model Publisher {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  createdAt DateTime @default(now())
+
+  books Book[]
+}
+
+/// Shop grid + product detail + cart line (id, name, author, image, price)
+model Book {
+  id              Int      @id @default(autoincrement())
+  sku             String   @unique
+  slug            String   @unique
+  title           String
+  authorId        Int
+  price           Decimal  @db.Decimal(10, 2)
+  compareAtPrice  Decimal? @db.Decimal(10, 2)
+  imageUrl        String
+  imagePublicId   String?
+  description     String   @db.Text
+  longDescription String?  @db.Text
+  format          String
+  publisherId     Int?
+  language        String?
+  pageCount       Int?
+  isbn10          String?
+  dimensions      String?
+  ratingAvg       Decimal? @db.Decimal(2, 1)
+  reviewCount     Int      @default(0)
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  author      Author     @relation(fields: [authorId], references: [id], onDelete: Restrict)
+  publisher   Publisher? @relation(fields: [publisherId], references: [id], onDelete: SetNull)
+  inventory   Inventory?
+  images       BookImage[]
+  categories   BookCategory[]
+  tags         BookTag[]
+  cartItems    CartItem[]
+  orderItems   OrderItem[]
+  reviews      Review[]
+  wishlistItems WishlistItem[]
+
+  @@index([isActive, price, createdAt])
+  @@index([price])
+  @@index([authorId])
+  @@index([publisherId])
+}
+
+model Inventory {
+  bookId    Int      @id
+  stock     Int
+  reserved  Int      @default(0)
+  updatedAt DateTime @updatedAt
+
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+}
+
+/// Extra gallery images on product detail (thumbnails)
+model BookImage {
+  id        Int    @id @default(autoincrement())
+  bookId    Int
+  url       String
+  sortOrder Int    @default(0)
+
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@index([bookId])
+}
+
+model BookCategory {
+  bookId     Int
+  categoryId Int
+
+  book     Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@id([bookId, categoryId])
+  @@index([categoryId])
+}
+
+model BookTag {
+  bookId Int
+  tagId  Int
+
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  tag  Tag  @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([bookId, tagId])
+}
+
+/// Server-side cart. At most one ACTIVE cart per user (@unique on userId). Guest carts keyed by sessionId + status in app (no unique on sessionId).
+model Cart {
+  id        String      @id @default(cuid())
+  userId    String?
+  sessionId String?
+  status    CartStatus  @default(ACTIVE)
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  user  User?      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items CartItem[]
+
+  @@index([userId, status])
+  @@index([sessionId, status])
+}
+
+model CartItem {
+  id        Int      @id @default(autoincrement())
+  cartId    String
+  bookId    Int
+  quantity  Int      @default(1)
+  titleSnapshot   String
+  authorSnapshot  String
+  imageUrlSnapshot String
+  unitPriceSnapshot Decimal @db.Decimal(10, 2)
+  lineTotalSnapshot Decimal @db.Decimal(10, 2)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  cart Cart @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@unique([cartId, bookId])
+}
+
+/// Checkout: `customer*` / address lines = immutable snapshot at purchase time (legal + history). Optional `shippingAddressId` = which saved Address template was used (if any).
+model Order {
+  id                String        @id @default(cuid())
+  /// Human-readable ref; **must be set in the app** before insert (Prisma cannot encode daily sequence here). Suggested: ORD-{YYYYMMDD}-{seq4} e.g. ORD-20260418-0001 (per-day counter in DB or Redis), or `nanoid()` / `cuid()` if you prefer opaque IDs.
+  orderNumber       String        @unique
+  status            OrderStatus   @default(PENDING)
+  paymentMethod     PaymentMethod
+
+  subtotal          Decimal       @db.Decimal(10, 2)
+  shippingAmount    Decimal       @db.Decimal(10, 2)
+  shippingLabel     String?
+  total             Decimal       @db.Decimal(10, 2)
+  currency          String        @default("USD")
+
+  customerFirstName String
+  customerLastName  String
+  customerEmail     String
+  customerPhone     String
+  countryCode       String
+  city              String
+  addressLine1      String
+  addressLine2      String?
+  orderNotes        String?       @db.Text
+
+  shippingAddressId String?
+
+  couponCode      String?
+  couponDiscount  Decimal? @db.Decimal(10, 2)
+
+  idempotencyKey   String?       @unique
+
+  userId    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  deletedAt DateTime?
+
+  user             User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+  shippingAddress  Address?    @relation("OrderShippingAddress", fields: [shippingAddressId], references: [id], onDelete: SetNull)
+  items            OrderItem[]
+  payments         Payment[]
+  shipments        Shipment[]
+  couponUsages     CouponUsage[]
+
+  @@index([customerEmail])
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+}
+
+/// One or more attempts / captures per order (COD pending → CAPTURED on delivery, PayPal webhooks, partial refunds, etc.).
+model Payment {
+  id                  String         @id @default(cuid())
+  orderId             String
+  method              PaymentMethod
+  status              PaymentStatus  @default(PENDING)
+  amount              Decimal        @db.Decimal(10, 2)
+  currency            String         @default("USD")
+  transactionId       String?        @unique
+  externalReference   String?        @unique
+  failureReason       String?        @db.Text
+  metadata            Json?
+  paidAt              DateTime?
+  refundedAt          DateTime?
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  refunds Refund[]
+  events  PaymentEvent[]
+
+  @@index([orderId])
+  @@index([status])
+  @@index([orderId, status])
+}
+
+model Refund {
+  id        String   @id @default(cuid())
+  paymentId String
+  amount    Decimal  @db.Decimal(10, 2)
+  reason    String?  @db.Text
+  createdAt DateTime @default(now())
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@index([paymentId])
+}
+
+model Shipment {
+  id             String   @id @default(cuid())
+  orderId        String
+  trackingNumber String?
+  carrier        String?
+  status         ShipmentStatus
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@index([trackingNumber])
+}
+
+/// Snapshot fields so history stays correct if Book changes
+model OrderItem {
+  id              Int     @id @default(autoincrement())
+  orderId         String
+  bookId          Int?
+  titleSnapshot   String
+  authorSnapshot  String
+  imageUrlSnapshot String
+  unitPrice       Decimal @db.Decimal(10, 2)
+  quantity        Int
+  lineTotal       Decimal @db.Decimal(10, 2)
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  book  Book? @relation(fields: [bookId], references: [id], onDelete: SetNull)
+
+  @@index([orderId])
+}
+
+/// Cart page “Apply Coupon”
+model Coupon {
+  id         Int        @id @default(autoincrement())
+  code       String     @unique
+  type       CouponType
+  value      Decimal    @db.Decimal(10, 2)
+  minSubtotal Decimal?  @db.Decimal(10, 2)
+  maxUses    Int?
+  expiresAt  DateTime?
+  isActive   Boolean    @default(true)
+  createdAt  DateTime   @default(now())
+  deletedAt  DateTime?
+
+  usages CouponUsage[]
+
+  @@index([code, isActive, expiresAt])
+}
+
+model CouponUsage {
+  id       Int      @id @default(autoincrement())
+  couponId Int
+  userId   String?
+  orderId  String
+  usedAt   DateTime @default(now())
+
+  coupon Coupon @relation(fields: [couponId], references: [id], onDelete: Cascade)
+  user   User?  @relation(fields: [userId], references: [id], onDelete: SetNull)
+  order  Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([couponId, userId])
+  @@index([orderId])
+  @@unique([couponId, userId])
+}
+
+/// Contact form: name, email, phone, order number, subject, message
+model ContactMessage {
+  id          Int      @id @default(autoincrement())
+  name        String
+  email       String
+  phone       String?
+  orderNumber String?
+  subject     String
+  message     String   @db.Text
+  createdAt   DateTime @default(now())
+  readAt      DateTime?
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  entity    String
+  entityId  String
+  action    String
+  userId    String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([entity, entityId])
+  @@index([userId])
+}
+
+model Post {
+  id        Int      @id @default(autoincrement())
+  title     String
+  slug      String   @unique
+  content   String   @db.Text
+  excerpt   String?  @db.Text
+  thumbnail String?
+  author    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Review {
+  id        String   @id @default(cuid())
+  bookId    Int
+  userId    String?
+  userName  String
+  rating    Int      @default(5)
+  comment   String   @db.Text
+  createdAt DateTime @default(now())
+
+  book      Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([bookId])
+  @@index([userId])
+}
+
+model Wishlist {
+  userId    String @id
+  user      User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items     WishlistItem[]
+}
+
+model WishlistItem {
+  id         String   @id @default(cuid())
+  wishlistId String
+  bookId     Int
+  createdAt  DateTime @default(now())
+
+  wishlist   Wishlist @relation(fields: [wishlistId], references: [userId], onDelete: Cascade)
+  book       Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@unique([wishlistId, bookId])
+}
